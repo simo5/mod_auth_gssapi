@@ -1,0 +1,22 @@
+Normative references:
+RFC 4559:
+    SPNEGO-based Kerberos and NTLM HTTP Authentication in Microsoft Windows
+    http://www.ietf.org/rfc/rfc4559.txt
+
+    How to use The SPNEGO GSS-API Mechanism with the HTTP protocol
+
+RFC 5929:
+    Channel Bindings for TLS
+    http://www.ietf.org/rfc/rfc5929.txt
+
+    Definition of tls-unique and tls-server-end-point channel bindings to be
+    used to bind a GSS-API authenticxation attempt to the outher TLS channel.
+
+    NOTE: Microsoft calls this Extended Protection for Authentication
+          Implements it in IE and IIS using tls-server-end-point:
+          http://blogs.msdn.com/b/openspecification/archive/2013/03/26/ntlm-and-channel-binding-hash-aka-exteneded-protection-for-authentication.aspx
+
+    NOTE: Firefox still does not implement this
+          https://bugzilla.mozilla.org/show_bug.cgi?id=563276
+
+    NOTE: Requires a mod_ssl patch to expose CB data

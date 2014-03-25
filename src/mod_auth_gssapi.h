@@ -93,6 +93,12 @@ struct mag_config {
     struct mag_name_attributes *name_attributes;
     bool enverrs;
     gss_name_t acceptor_name;
+
+    enum {
+        CB_NONE,
+        CB_TLS_UNIQUE,
+        CB_TLS_SERVER_END_POINT,
+    } gss_use_cb;
 };
 
 struct mag_server_config {

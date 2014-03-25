@@ -28,6 +28,11 @@ module AP_MODULE_DECLARE_DATA auth_gssapi_module;
 
 APLOG_USE_MODULE(auth_gssapi);
 
+APR_DECLARE_OPTIONAL_FN(int, ssl_is_https, (conn_rec *));
+APR_DECLARE_OPTIONAL_FN(apr_status_t, ssl_get_tls_cb,
+                        (apr_pool_t *, conn_rec *, const char *,
+                         unsigned char **, apr_size_t *));
+
 static char *mag_status(apr_pool_t *pool, int type, uint32_t err)
 {
     uint32_t maj_ret, min_ret;
@@ -108,12 +113,14 @@ static void mag_post_error(request_rec *req, struct mag_config *cfg,
 }
 
 static APR_OPTIONAL_FN_TYPE(ssl_is_https) *mag_is_https = NULL;
+static APR_OPTIONAL_FN_TYPE(ssl_get_tls_cb) *mag_get_tls_cb = NULL;
 
 static int mag_post_config(apr_pool_t *cfgpool, apr_pool_t *log,
                            apr_pool_t *temp, server_rec *s)
 {
     /* FIXME: create mutex to deal with connections and contexts ? */
     mag_is_https = APR_RETRIEVE_OPTIONAL_FN(ssl_is_https);
+    mag_get_tls_cb = APR_RETRIEVE_OPTIONAL_FN(ssl_get_tls_cb);
     mag_post_config_session();
     ap_add_version_component(cfgpool, MOD_AUTH_GSSAPI_VERSION);
 
@@ -176,6 +183,17 @@ static bool mag_conn_is_https(conn_rec *c)
     }
 
     return false;
+}
+
+static apr_status_t mag_conn_tls_cb(apr_pool_t *p, conn_rec *c,
+                                    const char *type, unsigned char **buf,
+                                    apr_size_t *size)
+{
+    if (mag_get_tls_cb) {
+        return mag_get_tls_cb(p, c, type, buf, size);
+    }
+
+    return DECLINED;
 }
 
 static bool mag_acquire_creds(request_rec *req,
@@ -834,6 +852,8 @@ static int mag_auth(request_rec *req)
     struct mag_conn *mc = NULL;
     int i;
     bool send_auth_header = true;
+    gss_channel_bindings_t cbt = GSS_C_NO_CHANNEL_BINDINGS;
+    struct gss_channel_bindings_struct cb = { 0 };
 
     type = ap_auth_type(req);
     if ((type == NULL) || (strcasecmp(type, "GSSAPI") != 0)) {
@@ -1087,10 +1107,40 @@ static int mag_auth(request_rec *req)
         }
     }
 
+    if (cfg->gss_use_cb != CB_NONE) {
+        const char *cb_type = NULL;
+        apr_size_t size;
+        unsigned char *buf;
+        apr_status_t res = APR_EGENERAL;
+        switch (cfg->gss_use_cb) {
+        case CB_TLS_SERVER_END_POINT:
+            cb_type = "SERVER_TLS_SERVER_END_POINT";
+            break;
+        case CB_TLS_UNIQUE:
+            cb_type = "SERVER_TLS_UNIQUE";
+            break;
+        default:
+            /* ?? */
+            break;
+        }
+        if (cb_type) {
+            res = mag_conn_tls_cb(req->pool, req->connection,
+                                  cb_type, &buf, &size);
+        }
+        if (res == APR_SUCCESS) {
+            cb.application_data.length = size;
+            cb.application_data.value = buf;
+            cbt = &cb;
+        } else {
+            ap_log_rerror(APLOG_MARK, APLOG_ERR|APLOG_NOERRNO, 0, req,
+                          "Channel Bindings requested but not available.");
+            goto done;
+        }
+    }
+
     maj = gss_accept_sec_context(&min, pctx, acquired_cred,
-                                 &input, GSS_C_NO_CHANNEL_BINDINGS,
-                                 &client, &mech_type, &output, NULL, &vtime,
-                                 &delegated_cred);
+                                 &input, cbt, &client, &mech_type, &output,
+                                 &flags, &vtime, &delegated_cred);
     if (GSS_ERROR(maj)) {
         mag_post_error(req, cfg, MAG_GSS_ERR, maj, min,
                        "In Negotiate Auth: gss_accept_sec_context() failed");
@@ -1338,6 +1388,19 @@ static void create_sess_key_file(cmd_parms *parms, const char *name)
 done:
     apr_file_close(fd);
     if (ret != APR_SUCCESS) apr_file_remove(name, parms->temp_pool);
+}
+
+static const char *mag_use_cb(cmd_parms *parms, void *mconfig, const char *w)
+{
+    struct mag_config *cfg = (struct mag_config *)mconfig;
+    if (strcasecmp(w, "tls-server-end-point") == 0) {
+        cfg->gss_use_cb = CB_TLS_SERVER_END_POINT;
+    } else if (strcasecmp(w, "tls-unique") == 0) {
+        cfg->gss_use_cb = CB_TLS_UNIQUE;
+    } else {
+        cfg->gss_use_cb = CB_NONE;
+    }
+    return NULL;
 }
 
 static const char *mag_sess_key(cmd_parms *parms, void *mconfig, const char *w)
@@ -1800,6 +1863,8 @@ static const command_rec mag_commands[] = {
                  "Publish GSSAPI Errors in Envionment Variables"),
     AP_INIT_RAW_ARGS("GssapiAcceptorName", mag_acceptor_name, NULL, OR_AUTHCFG,
                      "Name of the acceptor credentials."),
+    AP_INIT_ITERATE("GssapiUseCB", mag_use_cb, NULL, OR_AUTHCFG,
+                    "Use Channel Bindings of specified type"),
     { NULL }
 };
 
